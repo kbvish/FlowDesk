@@ -251,6 +251,35 @@ C:\Users\<Username>\AppData\Roaming\FlowDesk\logs\app.log
 
 ---
 
+📥 Download
+Windows
+
+Download the latest stable release of FlowDesk using one of the options below.
+
+🚀 Installer (Recommended)
+
+➡️ Download FlowDesk Setup v1.0.0
+
+The installer will:
+
+Install FlowDesk on your PC
+Create Start Menu shortcuts
+Optionally create a Desktop shortcut
+Register an uninstaller
+Bundle all required dependencies (no need to install SQLite, Node.js, or any additional software)
+📦 Latest Release
+
+You can also browse all releases, release notes, and previous versions here:
+
+https://github.com/kbvish/FlowDesk/releases/latest
+
+Requirements
+Windows 10 or Windows 11 (64-bit)
+
+No internet connection is required after installation.
+
+All user data is stored locally using SQLite for complete privacy.
+
 # 🤝 Contributing
 
 Contributions, suggestions, and bug reports are welcome.
@@ -264,6 +293,8 @@ Please open an Issue or submit a Pull Request.
 This project is licensed under the MIT License.
 
 ---
+
+
 
 ## ⭐ Support
 
