@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Production output build folders
+dist/
+dist-electron/
+release/
+
+# Lock files and log files
+package-lock.json
+*.log
+*.log.*
+flowdesk.db*
+temp/
