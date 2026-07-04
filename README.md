@@ -258,7 +258,7 @@ Download the latest stable release of FlowDesk using one of the options below.
 
 🚀 Installer (Recommended)
 
-➡️ Download FlowDesk Setup v1.0.0
+[⬇️ Download FlowDesk Setup v1.0.0](https://github.com/kbvish/FlowDesk/releases/download/v0.1.0/FlowDesk.Setup.1.0.0.exe)
 
 The installer will:
 
