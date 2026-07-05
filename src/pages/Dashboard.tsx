@@ -5,7 +5,16 @@ import {
   Flame, CheckCircle2, Circle, Clock, Target, Calendar, 
   ChevronRight, ArrowRight, Quote, Plus, AlertCircle, Sparkles
 } from 'lucide-react';
-import { useDataStore, useAppStore } from '../hooks/useStore';
+import { useDataStore, useAppStore, useThemeStore } from '../hooks/useStore';
+
+const ACCENT_COLORS_HEX = {
+  indigo: '#6366f1',
+  blue: '#3b82f6',
+  green: '#22c55e',
+  emerald: '#10b981',
+  orange: '#f97316',
+  rose: '#f43f5e',
+};
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Task, Goal } from '../types';
@@ -13,6 +22,9 @@ import { Task, Goal } from '../types';
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { tasks, goals, loadAllData, createTask, updateTask } = useDataStore();
+  const { accent } = useThemeStore();
+  
+  const activeAccentHex = ACCENT_COLORS_HEX[accent] || '#6366f1';
   const { currentQuote, loadQuote, setQuickAddOpen } = useAppStore();
 
   const [quickTitle, setQuickTitle] = useState('');
@@ -336,7 +348,7 @@ export const Dashboard: React.FC = () => {
           </div>
 
           <div className="flex-1 min-h-[180px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height={185}>
               <BarChart data={weeklyChartData}>
                 <XAxis 
                   dataKey="day" 
@@ -367,7 +379,7 @@ export const Dashboard: React.FC = () => {
                   {weeklyChartData.map((entry, index) => (
                     <Cell 
                       key={`cell-${index}`} 
-                      fill={index === 6 ? 'hsl(var(--accent))' : 'hsl(var(--accent) / 0.5)'} 
+                      fill={index === 6 ? activeAccentHex : `${activeAccentHex}80`} 
                     />
                   ))}
                 </Bar>

@@ -11,15 +11,23 @@ import { cn } from '../utils/cn';
 
 export const Calendar: React.FC = () => {
   const { tasks, loadAllData, updateTask } = useDataStore();
-  const { setQuickAddOpen } = useAppStore();
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<'month' | 'week'>('month');
   const [selectedDateStr, setSelectedDateStr] = useState<string | null>(null);
+  const [localQuickAddOpen, setLocalQuickAddOpen] = useState(false);
 
   useEffect(() => {
     loadAllData();
   }, [loadAllData]);
+
+  // Safe timezone-independent local date string formatter (YYYY-MM-DD)
+  const formatDateLocal = (date: Date): string => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
 
   // Navigate dates
   const next = () => {
@@ -64,7 +72,7 @@ export const Calendar: React.FC = () => {
   // Click empty date cell to create a task
   const handleDateClick = (dateStr: string) => {
     setSelectedDateStr(dateStr);
-    setQuickAddOpen(true);
+    setLocalQuickAddOpen(true);
   };
 
   // Get tasks due on a specific date (excluding subtasks)
@@ -100,7 +108,7 @@ export const Calendar: React.FC = () => {
     for (let i = firstDayIndex - 1; i >= 0; i--) {
       const dayNum = prevTotalDays - i;
       const prevDate = new Date(year, month - 1, dayNum);
-      const dateStr = prevDate.toISOString().substring(0, 10);
+      const dateStr = formatDateLocal(prevDate);
       const dateTasks = getTasksForDate(dateStr);
 
       cells.push(
@@ -143,10 +151,10 @@ export const Calendar: React.FC = () => {
     }
 
     // Current month days
-    const todayStr = new Date().toISOString().substring(0, 10);
+    const todayStr = formatDateLocal(new Date());
     for (let day = 1; day <= totalDays; day++) {
       const curDate = new Date(year, month, day);
-      const dateStr = curDate.toISOString().substring(0, 10);
+      const dateStr = formatDateLocal(curDate);
       const isToday = dateStr === todayStr;
       const dateTasks = getTasksForDate(dateStr);
 
@@ -199,7 +207,7 @@ export const Calendar: React.FC = () => {
     const remainingCells = 42 - cells.length; // Standard 6 weeks grid layout
     for (let day = 1; day <= remainingCells; day++) {
       const nextDate = new Date(year, month + 1, day);
-      const dateStr = nextDate.toISOString().substring(0, 10);
+      const dateStr = formatDateLocal(nextDate);
       const dateTasks = getTasksForDate(dateStr);
 
       cells.push(
@@ -255,13 +263,13 @@ export const Calendar: React.FC = () => {
     startOfWeek.setDate(currentDate.getDate() - currentDate.getDay());
 
     const daysName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const todayStr = new Date().toISOString().substring(0, 10);
+    const todayStr = formatDateLocal(new Date());
 
     const cells = [];
     for (let i = 0; i < 7; i++) {
       const date = new Date(startOfWeek);
       date.setDate(startOfWeek.getDate() + i);
-      const dateStr = date.toISOString().substring(0, 10);
+      const dateStr = formatDateLocal(date);
       const isToday = dateStr === todayStr;
       const dateTasks = getTasksForDate(dateStr);
 
@@ -409,9 +417,9 @@ export const Calendar: React.FC = () => {
       {/* Quick Add dialog trigger with preset date */}
       {selectedDateStr && (
         <QuickAddTask
-          isOpen={quickAddOpen}
+          isOpen={localQuickAddOpen}
           onClose={() => {
-            setQuickAddOpen(false);
+            setLocalQuickAddOpen(false);
             setSelectedDateStr(null);
           }}
           defaultDate={selectedDateStr}

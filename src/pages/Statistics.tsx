@@ -4,11 +4,24 @@ import {
   CheckCircle2, Flame, TrendingUp, BookOpen, Smile, 
   Calendar, PieChart as PieIcon, Award, Sparkles
 } from 'lucide-react';
-import { useDataStore } from '../hooks/useStore';
+import { useDataStore, useThemeStore } from '../hooks/useStore';
+import { cn } from '../utils/cn';
+
+const ACCENT_COLORS_HEX = {
+  indigo: '#6366f1',
+  blue: '#3b82f6',
+  green: '#22c55e',
+  emerald: '#10b981',
+  orange: '#f97316',
+  rose: '#f43f5e',
+};
 
 export const Statistics: React.FC = () => {
   const { tasks, reflections, loadAllData } = useDataStore();
+  const { accent } = useThemeStore();
   const [statsPeriod, setStatsPeriod] = useState<'week' | 'month'>('week');
+
+  const activeAccentHex = ACCENT_COLORS_HEX[accent] || '#6366f1';
 
   // Computed metrics state
   const [metrics, setMetrics] = useState({
@@ -39,15 +52,18 @@ export const Statistics: React.FC = () => {
   }, [tasks, reflections, statsPeriod]);
 
   const computeMetrics = () => {
-    const totalCreated = tasks.length;
-    const totalCompleted = tasks.filter((t) => t.status === 'Completed').length;
-    const completionRate = totalCreated > 0 ? Math.round((totalCompleted / totalCreated) * 105) / 1.05 : 0; // Guard
+    const safeTasks = tasks || [];
+    const safeReflections = reflections || [];
+
+    const totalCreated = safeTasks.length;
+    const totalCompleted = safeTasks.filter((t) => t.status === 'Completed').length;
+    const completionRate = totalCreated > 0 ? Math.round((totalCompleted / totalCreated) * 100) : 0;
     const finalRate = Math.min(Math.round(completionRate), 100);
 
     // Compute Streaks
     const completedDates = Array.from(
       new Set(
-        tasks
+        safeTasks
           .filter((t) => t.status === 'Completed' && t.completed_at)
           .map((t) => t.completed_at!.substring(0, 10))
       )
@@ -78,7 +94,6 @@ export const Statistics: React.FC = () => {
 
       // Calculate Longest Streak
       let tempStreak = 1;
-      let checkDate = new Date(completedDates[0]);
       longestStreak = 1;
 
       for (let i = 1; i < completedDates.length; i++) {
@@ -104,11 +119,14 @@ export const Statistics: React.FC = () => {
     const daysName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const completionsDayCounts = [0, 0, 0, 0, 0, 0, 0];
     
-    tasks
+    safeTasks
       .filter((t) => t.status === 'Completed' && t.completed_at)
       .forEach((t) => {
         const d = new Date(t.completed_at!);
-        completionsDayCounts[d.getDay()]++;
+        const dayIdx = d.getDay();
+        if (!isNaN(dayIdx)) {
+          completionsDayCounts[dayIdx]++;
+        }
       });
 
     let maxDayIndex = 0;
@@ -123,8 +141,8 @@ export const Statistics: React.FC = () => {
     const mostProductiveDay = maxCount > 0 ? daysName[maxDayIndex] : 'None';
 
     // Average Mood Reflection
-    const totalRef = reflections.length;
-    const moodSum = reflections.reduce((acc, r) => acc + r.mood, 0);
+    const totalRef = safeReflections.length;
+    const moodSum = safeReflections.reduce((acc, r) => acc + (r.mood || 0), 0);
     const averageMood = totalRef > 0 ? Math.round((moodSum / totalRef) * 10) / 10 : 0;
 
     setMetrics({
@@ -139,13 +157,14 @@ export const Statistics: React.FC = () => {
   };
 
   const computeTrendData = () => {
+    const safeTasks = tasks || [];
     const data = [];
     const numDays = statsPeriod === 'week' ? 7 : 30;
 
     for (let i = numDays - 1; i >= 0; i--) {
       const date = new Date(Date.now() - i * 86400000);
       const dateStr = date.toISOString().substring(0, 10);
-      const count = tasks.filter(
+      const count = safeTasks.filter(
         (t) => t.status === 'Completed' && t.completed_at && t.completed_at.substring(0, 10) === dateStr
       ).length;
 
@@ -158,11 +177,13 @@ export const Statistics: React.FC = () => {
   };
 
   const computeCategoryData = () => {
+    const safeTasks = tasks || [];
     const counts: Record<string, number> = {};
-    tasks
+    safeTasks
       .filter((t) => t.status === 'Completed')
       .forEach((t) => {
-        counts[t.category] = (counts[t.category] || 0) + 1;
+        const cat = t.category || 'Inbox';
+        counts[cat] = (counts[cat] || 0) + 1;
       });
 
     const data = Object.keys(counts).map((key) => ({
@@ -180,13 +201,14 @@ export const Statistics: React.FC = () => {
 
   // Github-style completions heatmap (past 18 weeks: 126 squares)
   const computeHeatmapData = () => {
+    const safeTasks = tasks || [];
     const data = [];
     const totalDays = 126; // 18 weeks
 
     for (let i = totalDays - 1; i >= 0; i--) {
       const date = new Date(Date.now() - i * 86400000);
       const dateStr = date.toISOString().substring(0, 10);
-      const count = tasks.filter(
+      const count = safeTasks.filter(
         (t) => t.status === 'Completed' && t.completed_at && t.completed_at.substring(0, 10) === dateStr
       ).length;
 
@@ -202,7 +224,6 @@ export const Statistics: React.FC = () => {
         level,
       });
     }
-    setTrendData((prev) => prev); // refresh
     setHeatmapData(data);
   };
 
@@ -280,12 +301,12 @@ export const Statistics: React.FC = () => {
           </div>
 
           <div className="flex-1 w-full min-h-[220px]">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height={230}>
               <AreaChart data={trendData}>
                 <defs>
                   <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="hsl(var(--accent))" stopOpacity={0.4}/>
-                    <stop offset="95%" stopColor="hsl(var(--accent))" stopOpacity={0}/>
+                    <stop offset="5%" stopColor={activeAccentHex} stopOpacity={0.4}/>
+                    <stop offset="95%" stopColor={activeAccentHex} stopOpacity={0}/>
                   </linearGradient>
                 </defs>
                 <XAxis dataKey="date" stroke="#64748b" fontSize={10} tickLine={false} axisLine={false} />
@@ -302,7 +323,7 @@ export const Statistics: React.FC = () => {
                 <Area 
                   type="monotone" 
                   dataKey="count" 
-                  stroke="hsl(var(--accent))" 
+                  stroke={activeAccentHex} 
                   strokeWidth={2}
                   fillOpacity={1} 
                   fill="url(#colorCount)" 
@@ -317,7 +338,7 @@ export const Statistics: React.FC = () => {
           <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Category Distribution</h4>
           
           <div className="flex-1 flex items-center justify-center min-h-[180px] relative">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height={200}>
               <PieChart>
                 <Pie
                   data={categoryData}

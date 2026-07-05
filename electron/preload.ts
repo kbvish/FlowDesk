@@ -3,7 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('api', {
   logs: {
     get: () => ipcRenderer.invoke('logs:get'),
-    clear: () => ipcRenderer.invoke('logs:clear')
+    clear: () => ipcRenderer.invoke('logs:clear'),
+    error: (message: string) => ipcRenderer.invoke('logs:error', message)
   },
   app: {
     version: () => ipcRenderer.invoke('app:version'),

@@ -359,6 +359,11 @@ ipcMain.handle('logs:clear', () => {
   return false;
 });
 
+ipcMain.handle('logs:error', (_, message: string) => {
+  log('error', `[RENDERER] ${message}`);
+  return true;
+});
+
 // App Version
 ipcMain.handle('app:version', () => {
   return app.getVersion();

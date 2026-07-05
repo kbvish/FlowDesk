@@ -1,6 +1,28 @@
 import React, { useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+
+// Global Unhandled Error Bridge to Main Process Log file
+window.onerror = (message, source, lineno, colno, error) => {
+  const details = `Exception: ${message} at ${source}:${lineno}:${colno}`;
+  const stack = error?.stack || '';
+  if (window.api && window.api.logs) {
+    window.api.logs.error(`${details}\nStack: ${stack}`);
+  } else {
+    console.error(details, stack);
+  }
+};
+
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason;
+  const details = `Unhandled Promise Rejection: ${reason}`;
+  const stack = reason?.stack || '';
+  if (window.api && window.api.logs) {
+    window.api.logs.error(`${details}\nStack: ${stack}`);
+  } else {
+    console.error(details, stack);
+  }
+});
 import { useThemeStore } from './hooks/useStore';
 
 // View Imports
@@ -50,7 +72,5 @@ const App = () => {
 };
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
+  <App />
 );
