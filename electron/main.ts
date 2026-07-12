@@ -1,13 +1,145 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import Database from 'better-sqlite3';
 import quotes from './quotes.json';
 
 // Keep a global reference of the window object to avoid garbage collection
 let mainWindow: BrowserWindow | null = null;
-let db: Database.Database | null = null;
 let logFilePath = '';
+
+// Interfaces
+interface Folder {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+interface Task {
+  id: string;
+  title: string;
+  description?: string;
+  priority: 'High' | 'Medium' | 'Low';
+  due_date?: string;
+  category: string;
+  status: 'Todo' | 'In_Progress' | 'Completed';
+  recurring: string;
+  parent_id?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+interface Goal {
+  id: string;
+  title: string;
+  description?: string;
+  target_date?: string;
+  status: 'Active' | 'Completed';
+  created_at: string;
+  milestones?: Milestone[];
+}
+
+interface Milestone {
+  id: string;
+  goal_id: string;
+  title: string;
+  status: 'Todo' | 'Completed';
+  created_at: string;
+}
+
+interface Note {
+  id: string;
+  title: string;
+  content?: string;
+  folder_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface DailyReflection {
+  date: string;
+  mood: number;
+  note?: string;
+  created_at: string;
+}
+
+interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  unlocked_at?: string | null;
+}
+
+interface Notification {
+  id: string;
+  title: string;
+  message: string;
+  read: number;
+  created_at: string;
+}
+
+interface FlowDeskData {
+  app_metadata: {
+    app_version: string;
+    db_version: number;
+  };
+  theme_preferences: {
+    mode: 'dark' | 'light';
+    accent: string;
+  };
+  folders: Folder[];
+  tasks: Task[];
+  goals: Goal[];
+  milestones: Milestone[];
+  notes: Note[];
+  daily_reflections: DailyReflection[];
+  achievements: Achievement[];
+  notifications: Notification[];
+  settings: Record<string, string>;
+}
+
+// In-Memory Database State
+let flowData: FlowDeskData = {
+  app_metadata: {
+    app_version: '1.0.0',
+    db_version: 1,
+  },
+  theme_preferences: {
+    mode: 'dark',
+    accent: 'indigo',
+  },
+  folders: [],
+  tasks: [],
+  goals: [],
+  milestones: [],
+  notes: [],
+  daily_reflections: [],
+  achievements: [
+    { id: 'first_task', title: 'First Step Taken', description: 'Create your first productivity task', unlocked_at: null },
+    { id: 'first_complete', title: 'Productivity Spark', description: 'Complete your first task', unlocked_at: null },
+    { id: 'streak_3', title: 'Building Momentum', description: 'Achieve a 3-day completion streak', unlocked_at: null },
+    { id: 'streak_7', title: 'Productive Habit', description: 'Achieve a 7-day completion streak', unlocked_at: null },
+    { id: 'goal_crusher', title: 'Goal Crusher', description: 'Complete a goal and all milestones', unlocked_at: null },
+    { id: 'note_taker', title: 'Documentarian', description: 'Create your first rich markdown note', unlocked_at: null },
+    { id: 'reflection_done', title: 'Mindful Mind', description: 'Save your first daily reflection', unlocked_at: null },
+    { id: 'productivity_master', title: 'Productivity Master', description: 'Complete 5 tasks in a single day', unlocked_at: null }
+  ],
+  notifications: [],
+  settings: {
+    quotes: JSON.stringify(quotes),
+    quotes_seeded: '1'
+  }
+};
+
+// Config Settings Schema
+interface AppConfig {
+  storageDirectory: string;
+}
+
+const defaultUserDataPath = app.getPath('userData');
+const configFilePath = path.join(defaultUserDataPath, 'flowdesk_config.json');
+let appConfig: AppConfig = {
+  storageDirectory: ''
+};
 
 // Setup Logging
 function initLogging() {
@@ -18,7 +150,6 @@ function initLogging() {
   }
   logFilePath = path.join(logDir, 'app.log');
   
-  // Rotate log if it gets too large (> 5MB)
   if (fs.existsSync(logFilePath) && fs.statSync(logFilePath).size > 5 * 1024 * 1024) {
     fs.renameSync(logFilePath, path.join(logDir, `app.log.old-${Date.now()}`));
   }
@@ -36,173 +167,125 @@ function log(level: 'info' | 'warn' | 'error', message: string) {
   console.log(logLine.trim());
 }
 
-// Database Management
-function initDatabase() {
+// Portable Mode: Detect executable path and check if writable
+function getDefaultStorageDirectory(): string {
+  const exeDir = path.dirname(process.execPath);
+  
+  // In development, default to local AppData to keep sources clean
+  if (!app.isPackaged) {
+    return path.join(app.getPath('userData'), 'database');
+  }
+
+  // Writable test in folder of executable
+  const testPath = path.join(exeDir, '.flowdesk_write_test');
   try {
-    const userDataPath = app.getPath('userData');
-    const dbDir = path.join(userDataPath, 'database');
-    if (!fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
-    }
-    const dbPath = path.join(dbDir, 'flowdesk.db');
-    log('info', `Opening database at: ${dbPath}`);
-
-    db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-
-    // Create Tables
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS app_metadata (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        app_version TEXT NOT NULL,
-        db_version INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS theme_preferences (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        mode TEXT DEFAULT 'dark',
-        accent TEXT DEFAULT 'indigo'
-      );
-
-      CREATE TABLE IF NOT EXISTS folders (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        priority TEXT CHECK(priority IN ('High', 'Medium', 'Low')) DEFAULT 'Medium',
-        due_date TEXT,
-        category TEXT DEFAULT 'Inbox',
-        status TEXT CHECK(status IN ('Todo', 'In_Progress', 'Completed')) DEFAULT 'Todo',
-        recurring TEXT DEFAULT 'None',
-        parent_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
-        created_at TEXT DEFAULT (datetime('now')),
-        completed_at TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS goals (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        target_date TEXT,
-        status TEXT CHECK(status IN ('Active', 'Completed')) DEFAULT 'Active',
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS milestones (
-        id TEXT PRIMARY KEY,
-        goal_id TEXT REFERENCES goals(id) ON DELETE CASCADE,
-        title TEXT NOT NULL,
-        status TEXT CHECK(status IN ('Todo', 'Completed')) DEFAULT 'Todo',
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS notes (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        content TEXT,
-        folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS daily_reflections (
-        date TEXT PRIMARY KEY,
-        mood INTEGER CHECK(mood BETWEEN 1 AND 5),
-        note TEXT,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS achievements (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT NOT NULL,
-        unlocked_at TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS notifications (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        message TEXT NOT NULL,
-        read INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT
-      );
-    `);
-
-    // Seed Achievements if not exist
-    const achievementCount = db.prepare('SELECT COUNT(*) as count FROM achievements').get() as { count: number };
-    if (achievementCount.count === 0) {
-      log('info', 'Seeding achievements...');
-      const insertAch = db.prepare('INSERT INTO achievements (id, title, description, unlocked_at) VALUES (?, ?, ?, ?)');
-      const achs = [
-        ['first_task', 'First Step Taken', 'Create your first productivity task', null],
-        ['first_complete', 'Productivity Spark', 'Complete your first task', null],
-        ['streak_3', 'Building Momentum', 'Achieve a 3-day completion streak', null],
-        ['streak_7', 'Productive Habit', 'Achieve a 7-day completion streak', null],
-        ['goal_crusher', 'Goal Crusher', 'Complete a goal and all milestones', null],
-        ['note_taker', 'Documentarian', 'Create your first rich markdown note', null],
-        ['reflection_done', 'Mindful Mind', 'Save your first daily reflection', null],
-        ['productivity_master', 'Productivity Master', 'Complete 5 tasks in a single day', null]
-      ];
-      const transaction = db.transaction((list) => {
-        for (const ach of list) {
-          insertAch.run(ach[0], ach[1], ach[2], ach[3]);
-        }
-      });
-      transaction(achs);
-    }
-
-    // Seed Quotes setting
-    const quoteCount = db.prepare('SELECT COUNT(*) as count FROM settings WHERE key = ?').get('quotes_seeded') as { count: number } | undefined;
-    if (!quoteCount || quoteCount.count === 0) {
-      log('info', `Seeding ${quotes.length} quotes...`);
-      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('quotes', JSON.stringify(quotes));
-      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('quotes_seeded', '1');
-    }
-
-    // Seed Theme preference
-    const themeCount = db.prepare('SELECT COUNT(*) as count FROM theme_preferences').get() as { count: number };
-    if (themeCount.count === 0) {
-      db.prepare('INSERT INTO theme_preferences (id, mode, accent) VALUES (1, \'dark\', \'indigo\')').run();
-    }
-
-    // Seed Initial App Metadata
-    const metadataCount = db.prepare('SELECT COUNT(*) as count FROM app_metadata').get() as { count: number };
-    if (metadataCount.count === 0) {
-      db.prepare('INSERT INTO app_metadata (id, app_version, db_version) VALUES (1, ?, ?)').run('1.0.0', 1);
-    }
-
-    log('info', 'Database initialized and seeded successfully.');
-  } catch (err: any) {
-    log('error', `Failed to initialize database: ${err?.message || err}`);
+    fs.writeFileSync(testPath, 'test');
+    fs.unlinkSync(testPath);
+    log('info', `Local folder writable. Activating portable storage folder at: ${exeDir}`);
+    return path.join(exeDir, 'data');
+  } catch (err) {
+    log('info', `Local folder not writable (e.g. Program Files). Defaulting storage to AppData.`);
+    return path.join(app.getPath('userData'), 'database');
   }
 }
 
-// Helper to check and unlock achievement
+// Config file management
+function loadConfig() {
+  appConfig.storageDirectory = getDefaultStorageDirectory();
+  try {
+    if (fs.existsSync(configFilePath)) {
+      const content = fs.readFileSync(configFilePath, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (parsed.storageDirectory) {
+        appConfig.storageDirectory = parsed.storageDirectory;
+        log('info', `Loaded database path from config: ${appConfig.storageDirectory}`);
+      }
+    } else {
+      saveConfig();
+    }
+  } catch (err) {
+    log('error', `Failed to load config file: ${err}`);
+  }
+}
+
+function saveConfig() {
+  try {
+    const parentDir = path.dirname(configFilePath);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+    fs.writeFileSync(configFilePath, JSON.stringify(appConfig, null, 2), 'utf-8');
+  } catch (err) {
+    log('error', `Failed to save config file: ${err}`);
+  }
+}
+
+// Database Initialization (JSON Storage)
+function initDatabase() {
+  loadConfig();
+  const dbDir = appConfig.storageDirectory;
+  const dbPath = path.join(dbDir, 'flowdesk_data.json');
+  try {
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+    if (fs.existsSync(dbPath)) {
+      const content = fs.readFileSync(dbPath, 'utf-8');
+      const parsed = JSON.parse(content);
+      // Basic validation check to verify correct root keys exist
+      if (parsed.tasks && parsed.theme_preferences && parsed.folders) {
+        flowData = parsed;
+        log('info', `Database loaded successfully from: ${dbPath}`);
+      } else {
+        throw new Error('Database schema structure is invalid.');
+      }
+    } else {
+      log('info', `Database file not found. Seeding initial data at: ${dbPath}`);
+      saveData();
+    }
+  } catch (err: any) {
+    log('error', `Database loading failed: ${err?.message || err}. Re-initializing default database.`);
+    saveData();
+  }
+}
+
+// Atomic Write Engine
+function saveData() {
+  const dbDir = appConfig.storageDirectory;
+  const dbPath = path.join(dbDir, 'flowdesk_data.json');
+  const tmpPath = `${dbPath}.tmp`;
+  try {
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+    fs.writeFileSync(tmpPath, JSON.stringify(flowData, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, dbPath);
+  } catch (err: any) {
+    log('error', `Failed to write database file atomically: ${err?.message || err}`);
+  }
+}
+
+// Achievements Check Helpers
 function checkAndUnlockAchievement(id: string): string[] {
-  if (!db) return [];
   const newlyUnlocked: string[] = [];
   try {
-    const ach = db.prepare('SELECT unlocked_at, title FROM achievements WHERE id = ?').get(id) as { unlocked_at: string | null; title: string } | undefined;
+    const ach = flowData.achievements.find((a) => a.id === id);
     if (ach && !ach.unlocked_at) {
       const nowStr = new Date().toISOString();
-      db.prepare('UPDATE achievements SET unlocked_at = ? WHERE id = ?').run(nowStr, id);
-      // Insert notification
+      ach.unlocked_at = nowStr;
+
       const notifId = Math.random().toString(36).substring(2, 9);
-      db.prepare('INSERT INTO notifications (id, title, message) VALUES (?, ?, ?)')
-        .run(notifId, 'Achievement Unlocked! 🏆', `You unlocked the achievement: ${ach.title}`);
+      flowData.notifications.push({
+        id: notifId,
+        title: 'Achievement Unlocked! 🏆',
+        message: `You unlocked the achievement: ${ach.title}`,
+        read: 0,
+        created_at: nowStr,
+      });
+      flowData.notifications.sort((a, b) => b.created_at.localeCompare(a.created_at));
       newlyUnlocked.push(ach.title);
       log('info', `Achievement unlocked: ${ach.title}`);
+      saveData();
     }
   } catch (err: any) {
     log('error', `Error checking achievement ${id}: ${err.message}`);
@@ -211,33 +294,30 @@ function checkAndUnlockAchievement(id: string): string[] {
 }
 
 function checkStreakAchievements(): string[] {
-  if (!db) return [];
   const newlyUnlocked: string[] = [];
   try {
-    // Compute current completion streak
-    // Find all distinct dates when tasks were completed
-    const completedDates = db.prepare(`
-      SELECT DISTINCT substr(completed_at, 1, 10) as dateVal 
-      FROM tasks 
-      WHERE status = 'Completed' AND completed_at IS NOT NULL
-      ORDER BY dateVal DESC
-    `).all() as { dateVal: string }[];
+    const completedDates = Array.from(
+      new Set(
+        flowData.tasks
+          .filter((t) => t.status === 'Completed' && t.completed_at)
+          .map((t) => t.completed_at!.substring(0, 10))
+      )
+    ).sort((a, b) => b.localeCompare(a));
 
     if (completedDates.length === 0) return [];
 
     let currentStreak = 0;
     const todayStr = new Date().toISOString().substring(0, 10);
     const yesterdayStr = new Date(Date.now() - 86400000).toISOString().substring(0, 10);
-    
-    // Check if the most recent completion is today or yesterday
-    const latestDate = completedDates[0].dateVal;
+
+    const latestDate = completedDates[0];
     if (latestDate === todayStr || latestDate === yesterdayStr) {
       currentStreak = 1;
       let checkDate = new Date(latestDate);
       for (let i = 1; i < completedDates.length; i++) {
         checkDate.setDate(checkDate.getDate() - 1);
         const expectedStr = checkDate.toISOString().substring(0, 10);
-        if (completedDates[i].dateVal === expectedStr) {
+        if (completedDates[i] === expectedStr) {
           currentStreak++;
         } else {
           break;
@@ -258,29 +338,30 @@ function checkStreakAchievements(): string[] {
 }
 
 function checkDailyCountAchievements(): string[] {
-  if (!db) return [];
   const newlyUnlocked: string[] = [];
   try {
     const todayStr = new Date().toISOString().substring(0, 10);
-    const completedToday = db.prepare(`
-      SELECT COUNT(*) as count 
-      FROM tasks 
-      WHERE status = 'Completed' 
-        AND completed_at IS NOT NULL 
-        AND substr(completed_at, 1, 10) = ?
-    `).get(todayStr) as { count: number } | undefined;
+    const completedToday = flowData.tasks.filter((t) => 
+      t.status === 'Completed' && 
+      t.completed_at && 
+      t.completed_at.substring(0, 10) === todayStr
+    ).length;
 
-    if (completedToday && completedToday.count >= 5) {
+    if (completedToday >= 5) {
       newlyUnlocked.push(...checkAndUnlockAchievement('productivity_master'));
     }
   } catch (err: any) {
-    log('error', `Daily count checking failed: ${err.message}`);
+    log('error', `Daily task count achievements check failed: ${err.message}`);
   }
   return newlyUnlocked;
 }
 
 // Window creation
 function createWindow() {
+  const iconPath = app.isPackaged 
+    ? path.join(__dirname, '../icon.png')
+    : path.join(__dirname, '../../public/icon.png');
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -289,6 +370,7 @@ function createWindow() {
     frame: true, // Native title bar
     show: false, // Don't show until ready
     backgroundColor: '#0F172A',
+    icon: iconPath, // Fixed taskbar icon loading
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -304,7 +386,6 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../index.html'));
   } else {
     mainWindow.loadURL('http://localhost:5173');
-    // Open DevTools in development
     mainWindow.webContents.openDevTools();
   }
 
@@ -330,17 +411,14 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (db) {
-    db.close();
-    log('info', 'Database connection closed.');
-  }
+  log('info', 'Application shutting down.');
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
 // ==========================================
-// IPC HANDLERS (SQLite Access API)
+// IPC HANDLERS (JSON Data API)
 // ==========================================
 
 // Logs
@@ -371,11 +449,10 @@ ipcMain.handle('app:version', () => {
 
 // Quotes
 ipcMain.handle('quotes:get-random', () => {
-  if (!db) return { text: 'Keep moving forward.', author: 'Unknown' };
   try {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('quotes') as { value: string } | undefined;
-    if (row) {
-      const parsedQuotes = JSON.parse(row.value);
+    const rawQuotes = flowData.settings.quotes;
+    if (rawQuotes) {
+      const parsedQuotes = JSON.parse(rawQuotes);
       if (Array.isArray(parsedQuotes) && parsedQuotes.length > 0) {
         const randomIndex = Math.floor(Math.random() * parsedQuotes.length);
         return parsedQuotes[randomIndex];
@@ -389,20 +466,14 @@ ipcMain.handle('quotes:get-random', () => {
 
 // Theme Preferences
 ipcMain.handle('theme:get', () => {
-  if (!db) return { mode: 'dark', accent: 'indigo' };
-  try {
-    const theme = db.prepare('SELECT mode, accent FROM theme_preferences WHERE id = 1').get() as { mode: string; accent: string } | undefined;
-    return theme || { mode: 'dark', accent: 'indigo' };
-  } catch (err) {
-    return { mode: 'dark', accent: 'indigo' };
-  }
+  return flowData.theme_preferences || { mode: 'dark', accent: 'indigo' };
 });
 
-ipcMain.handle('theme:save', (_, mode: string, accent: string) => {
-  if (!db) return false;
+ipcMain.handle('theme:save', (_, mode: 'dark' | 'light', accent: string) => {
   try {
-    db.prepare('UPDATE theme_preferences SET mode = ?, accent = ? WHERE id = 1').run(mode, accent);
+    flowData.theme_preferences = { mode, accent };
     log('info', `Saved theme: mode=${mode}, accent=${accent}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error saving theme: ${err.message}`);
@@ -412,38 +483,42 @@ ipcMain.handle('theme:save', (_, mode: string, accent: string) => {
 
 // Tasks
 ipcMain.handle('tasks:all', () => {
-  if (!db) return [];
-  try {
-    return db.prepare('SELECT * FROM tasks ORDER BY due_date ASC, created_at DESC').all();
-  } catch (err: any) {
-    log('error', `Error fetching tasks: ${err.message}`);
-    return [];
-  }
+  const list = [...flowData.tasks];
+  // Sort by due_date ASC (nulls last), then created_at DESC
+  return list.sort((a, b) => {
+    if (a.due_date && b.due_date) {
+      const dateDiff = a.due_date.localeCompare(b.due_date);
+      if (dateDiff !== 0) return dateDiff;
+    } else if (a.due_date) {
+      return -1;
+    } else if (b.due_date) {
+      return 1;
+    }
+    return b.created_at.localeCompare(a.created_at);
+  });
 });
 
 ipcMain.handle('tasks:create', (_, task: any) => {
-  if (!db) return { success: false, unlocked: [] };
   try {
-    const stmt = db.prepare(`
-      INSERT INTO tasks (id, title, description, priority, due_date, category, status, recurring, parent_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      task.id,
-      task.title,
-      task.description || '',
-      task.priority || 'Medium',
-      task.due_date || null,
-      task.category || 'Inbox',
-      task.status || 'Todo',
-      task.recurring || 'None',
-      task.parent_id || null,
-      task.created_at || new Date().toISOString()
-    );
+    const newTask: Task = {
+      id: task.id,
+      title: task.title,
+      description: task.description || '',
+      priority: task.priority || 'Medium',
+      due_date: task.due_date || undefined,
+      category: task.category || 'Inbox',
+      status: task.status || 'Todo',
+      recurring: task.recurring || 'None',
+      parent_id: task.parent_id || undefined,
+      created_at: task.created_at || new Date().toISOString(),
+      completed_at: task.status === 'Completed' ? new Date().toISOString() : undefined
+    };
+    flowData.tasks.push(newTask);
     log('info', `Task created: ${task.id} - ${task.title}`);
-    
+
     // Check first task achievement
     const unlocked = checkAndUnlockAchievement('first_task');
+    saveData();
     return { success: true, unlocked };
   } catch (err: any) {
     log('error', `Error creating task: ${err.message}`);
@@ -452,24 +527,18 @@ ipcMain.handle('tasks:create', (_, task: any) => {
 });
 
 ipcMain.handle('tasks:update', (_, id: string, updates: any) => {
-  if (!db) return { success: false, unlocked: [] };
   try {
-    const keys = Object.keys(updates);
-    if (keys.length === 0) return { success: true, unlocked: [] };
+    const task = flowData.tasks.find((t) => t.id === id);
+    if (!task) return { success: false, error: 'Task not found', unlocked: [] };
 
-    // Capture completion date if status transitions to completed
-    if (updates.status === 'Completed') {
+    // Set completed_at timestamp
+    if (updates.status === 'Completed' && task.status !== 'Completed') {
       updates.completed_at = new Date().toISOString();
     } else if (updates.status && updates.status !== 'Completed') {
-      updates.completed_at = null;
+      updates.completed_at = undefined;
     }
 
-    const updateKeys = Object.keys(updates);
-    const setClause = updateKeys.map(k => `${k} = ?`).join(', ');
-    const values = updateKeys.map(k => updates[k]);
-    values.push(id);
-
-    db.prepare(`UPDATE tasks SET ${setClause} WHERE id = ?`).run(...values);
+    Object.assign(task, updates);
     log('info', `Task updated: ${id}`);
 
     const unlocked: string[] = [];
@@ -479,6 +548,7 @@ ipcMain.handle('tasks:update', (_, id: string, updates: any) => {
       unlocked.push(...checkStreakAchievements());
     }
 
+    saveData();
     return { success: true, unlocked };
   } catch (err: any) {
     log('error', `Error updating task: ${err.message}`);
@@ -487,10 +557,11 @@ ipcMain.handle('tasks:update', (_, id: string, updates: any) => {
 });
 
 ipcMain.handle('tasks:delete', (_, id: string) => {
-  if (!db) return false;
   try {
-    db.prepare('DELETE FROM tasks WHERE id = ? OR parent_id = ?').run(id, id);
+    // Cascading delete for subtasks
+    flowData.tasks = flowData.tasks.filter((t) => t.id !== id && t.parent_id !== id);
     log('info', `Task deleted: ${id}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error deleting task: ${err.message}`);
@@ -499,15 +570,15 @@ ipcMain.handle('tasks:delete', (_, id: string) => {
 });
 
 ipcMain.handle('tasks:bulk-complete', (_, ids: string[]) => {
-  if (!db || !ids.length) return { success: false, unlocked: [] };
+  if (!ids.length) return { success: false, unlocked: [] };
   try {
     const nowStr = new Date().toISOString();
-    const placeholders = ids.map(() => '?').join(',');
-    db.prepare(`
-      UPDATE tasks 
-      SET status = 'Completed', completed_at = ? 
-      WHERE id IN (${placeholders})
-    `).run(nowStr, ...ids);
+    flowData.tasks.forEach((t) => {
+      if (ids.includes(t.id)) {
+        t.status = 'Completed';
+        t.completed_at = nowStr;
+      }
+    });
     log('info', `Bulk completed tasks: ${ids.join(', ')}`);
 
     const unlocked: string[] = [];
@@ -515,6 +586,7 @@ ipcMain.handle('tasks:bulk-complete', (_, ids: string[]) => {
     unlocked.push(...checkDailyCountAchievements());
     unlocked.push(...checkStreakAchievements());
 
+    saveData();
     return { success: true, unlocked };
   } catch (err: any) {
     log('error', `Error bulk completing tasks: ${err.message}`);
@@ -523,11 +595,12 @@ ipcMain.handle('tasks:bulk-complete', (_, ids: string[]) => {
 });
 
 ipcMain.handle('tasks:bulk-delete', (_, ids: string[]) => {
-  if (!db || !ids.length) return false;
+  if (!ids.length) return false;
   try {
-    const placeholders = ids.map(() => '?').join(',');
-    db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...ids);
+    // Delete parent tasks and matching subtasks
+    flowData.tasks = flowData.tasks.filter((t) => !ids.includes(t.id) && !(t.parent_id && ids.includes(t.parent_id)));
     log('info', `Bulk deleted tasks: ${ids.join(', ')}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error bulk deleting tasks: ${err.message}`);
@@ -537,25 +610,27 @@ ipcMain.handle('tasks:bulk-delete', (_, ids: string[]) => {
 
 // Goals
 ipcMain.handle('goals:all', () => {
-  if (!db) return [];
-  try {
-    const goalsList = db.prepare('SELECT * FROM goals ORDER BY created_at DESC').all() as any[];
-    for (const g of goalsList) {
-      g.milestones = db.prepare('SELECT * FROM milestones WHERE goal_id = ?').all(g.id);
-    }
-    return goalsList;
-  } catch (err: any) {
-    log('error', `Error fetching goals: ${err.message}`);
-    return [];
-  }
+  const goalsList = [...flowData.goals];
+  // Nest milestones inside goals
+  goalsList.forEach((g) => {
+    g.milestones = flowData.milestones.filter((m) => m.goal_id === g.id);
+  });
+  return goalsList.sort((a, b) => b.created_at.localeCompare(a.created_at));
 });
 
 ipcMain.handle('goals:create', (_, goal: any) => {
-  if (!db) return false;
   try {
-    db.prepare('INSERT INTO goals (id, title, description, target_date, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(goal.id, goal.title, goal.description || '', goal.target_date || null, goal.status || 'Active', goal.created_at || new Date().toISOString());
+    const newGoal: Goal = {
+      id: goal.id,
+      title: goal.title,
+      description: goal.description || '',
+      target_date: goal.target_date || undefined,
+      status: goal.status || 'Active',
+      created_at: goal.created_at || new Date().toISOString()
+    };
+    flowData.goals.push(newGoal);
     log('info', `Goal created: ${goal.title}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error creating goal: ${err.message}`);
@@ -564,25 +639,23 @@ ipcMain.handle('goals:create', (_, goal: any) => {
 });
 
 ipcMain.handle('goals:update', (_, id: string, updates: any) => {
-  if (!db) return { success: false, unlocked: [] };
   try {
-    const keys = Object.keys(updates);
-    if (keys.length === 0) return { success: true, unlocked: [] };
-    
-    const setClause = keys.map(k => `${k} = ?`).join(', ');
-    const values = keys.map(k => updates[k]);
-    values.push(id);
+    const goal = flowData.goals.find((g) => g.id === id);
+    if (!goal) return { success: false, error: 'Goal not found', unlocked: [] };
 
-    db.prepare(`UPDATE goals SET ${setClause} WHERE id = ?`).run(...values);
+    Object.assign(goal, updates);
     log('info', `Goal updated: ${id}`);
 
     const unlocked: string[] = [];
     if (updates.status === 'Completed') {
-      // Check if all milestones are completed as well
-      db.prepare('UPDATE milestones SET status = \'Completed\' WHERE goal_id = ?').run(id);
+      // Force complete all related milestones
+      flowData.milestones.forEach((m) => {
+        if (m.goal_id === id) m.status = 'Completed';
+      });
       unlocked.push(...checkAndUnlockAchievement('goal_crusher'));
     }
 
+    saveData();
     return { success: true, unlocked };
   } catch (err: any) {
     log('error', `Error updating goal: ${err.message}`);
@@ -591,10 +664,12 @@ ipcMain.handle('goals:update', (_, id: string, updates: any) => {
 });
 
 ipcMain.handle('goals:delete', (_, id: string) => {
-  if (!db) return false;
   try {
-    db.prepare('DELETE FROM goals WHERE id = ?').run(id);
+    flowData.goals = flowData.goals.filter((g) => g.id !== id);
+    // Cascade milestones delete
+    flowData.milestones = flowData.milestones.filter((m) => m.goal_id !== id);
     log('info', `Goal deleted: ${id}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error deleting goal: ${err.message}`);
@@ -604,11 +679,17 @@ ipcMain.handle('goals:delete', (_, id: string) => {
 
 // Milestones
 ipcMain.handle('milestones:create', (_, mil: any) => {
-  if (!db) return false;
   try {
-    db.prepare('INSERT INTO milestones (id, goal_id, title, status, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(mil.id, mil.goal_id, mil.title, mil.status || 'Todo', mil.created_at || new Date().toISOString());
+    const newMilestone: Milestone = {
+      id: mil.id,
+      goal_id: mil.goal_id,
+      title: mil.title,
+      status: mil.status || 'Todo',
+      created_at: mil.created_at || new Date().toISOString()
+    };
+    flowData.milestones.push(newMilestone);
     log('info', `Milestone created: ${mil.title}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error creating milestone: ${err.message}`);
@@ -616,26 +697,28 @@ ipcMain.handle('milestones:create', (_, mil: any) => {
   }
 });
 
-ipcMain.handle('milestones:update', (_, id: string, status: string) => {
-  if (!db) return { success: false, unlocked: [] };
+ipcMain.handle('milestones:update', (_, id: string, status: 'Todo' | 'Completed') => {
   try {
-    db.prepare('UPDATE milestones SET status = ? WHERE id = ?').run(status, id);
-    
-    // Check if goal needs to be completed / check goal crusher
-    const mil = db.prepare('SELECT goal_id FROM milestones WHERE id = ?').get(id) as { goal_id: string } | undefined;
+    const mil = flowData.milestones.find((m) => m.id === id);
+    if (!mil) return { success: false, unlocked: [] };
+
+    mil.status = status;
+    const goalId = mil.goal_id;
+
     const unlocked: string[] = [];
-    if (mil) {
-      const goalId = mil.goal_id;
-      // If all milestones of this goal are completed
-      const totalMils = db.prepare('SELECT COUNT(*) as count FROM milestones WHERE goal_id = ?').get(goalId) as { count: number };
-      const completedMils = db.prepare('SELECT COUNT(*) as count FROM milestones WHERE goal_id = ? AND status = \'Completed\'').get(goalId) as { count: number };
-      
-      if (totalMils.count > 0 && totalMils.count === completedMils.count) {
-        db.prepare('UPDATE goals SET status = \'Completed\' WHERE id = ?').run(goalId);
+    // If all milestones for this goal are completed, set Goal status to completed
+    const goalMils = flowData.milestones.filter((m) => m.goal_id === goalId);
+    const completedMils = goalMils.filter((m) => m.status === 'Completed');
+
+    if (goalMils.length > 0 && goalMils.length === completedMils.length) {
+      const goal = flowData.goals.find((g) => g.id === goalId);
+      if (goal && goal.status !== 'Completed') {
+        goal.status = 'Completed';
         unlocked.push(...checkAndUnlockAchievement('goal_crusher'));
       }
     }
 
+    saveData();
     return { success: true, unlocked };
   } catch (err: any) {
     log('error', `Error updating milestone: ${err.message}`);
@@ -644,9 +727,9 @@ ipcMain.handle('milestones:update', (_, id: string, status: string) => {
 });
 
 ipcMain.handle('milestones:delete', (_, id: string) => {
-  if (!db) return false;
   try {
-    db.prepare('DELETE FROM milestones WHERE id = ?').run(id);
+    flowData.milestones = flowData.milestones.filter((m) => m.id !== id);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error deleting milestone: ${err.message}`);
@@ -656,21 +739,19 @@ ipcMain.handle('milestones:delete', (_, id: string) => {
 
 // Folders
 ipcMain.handle('folders:all', () => {
-  if (!db) return [];
-  try {
-    return db.prepare('SELECT * FROM folders ORDER BY name ASC').all();
-  } catch (err: any) {
-    log('error', `Error loading folders: ${err.message}`);
-    return [];
-  }
+  return [...flowData.folders].sort((a, b) => a.name.localeCompare(b.name));
 });
 
 ipcMain.handle('folders:create', (_, folder: any) => {
-  if (!db) return false;
   try {
-    db.prepare('INSERT INTO folders (id, name, created_at) VALUES (?, ?, ?)')
-      .run(folder.id, folder.name, folder.created_at || new Date().toISOString());
+    const newFolder: Folder = {
+      id: folder.id,
+      name: folder.name,
+      created_at: folder.created_at || new Date().toISOString()
+    };
+    flowData.folders.push(newFolder);
     log('info', `Folder created: ${folder.name}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error creating folder: ${err.message}`);
@@ -678,12 +759,16 @@ ipcMain.handle('folders:create', (_, folder: any) => {
   }
 });
 
+// Folders delete cascading logic
 ipcMain.handle('folders:delete', (_, id: string) => {
-  if (!db) return false;
   try {
-    // Note that ON DELETE SET NULL is set on notes.folder_id
-    db.prepare('DELETE FROM folders WHERE id = ?').run(id);
+    flowData.folders = flowData.folders.filter((f) => f.id !== id);
+    // Orphan folder_id for associated notes
+    flowData.notes.forEach((n) => {
+      if (n.folder_id === id) n.folder_id = undefined;
+    });
     log('info', `Folder deleted: ${id}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error deleting folder: ${err.message}`);
@@ -693,23 +778,24 @@ ipcMain.handle('folders:delete', (_, id: string) => {
 
 // Notes
 ipcMain.handle('notes:all', () => {
-  if (!db) return [];
-  try {
-    return db.prepare('SELECT * FROM notes ORDER BY updated_at DESC').all();
-  } catch (err: any) {
-    log('error', `Error fetching notes: ${err.message}`);
-    return [];
-  }
+  return [...flowData.notes].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 });
 
 ipcMain.handle('notes:create', (_, note: any) => {
-  if (!db) return { success: false, unlocked: [] };
   try {
-    db.prepare('INSERT INTO notes (id, title, content, folder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(note.id, note.title, note.content || '', note.folder_id || null, note.created_at || new Date().toISOString(), note.updated_at || new Date().toISOString());
+    const newNote: Note = {
+      id: note.id,
+      title: note.title,
+      content: note.content || '',
+      folder_id: note.folder_id || undefined,
+      created_at: note.created_at || new Date().toISOString(),
+      updated_at: note.updated_at || new Date().toISOString()
+    };
+    flowData.notes.push(newNote);
     log('info', `Note created: ${note.title}`);
 
     const unlocked = checkAndUnlockAchievement('note_taker');
+    saveData();
     return { success: true, unlocked };
   } catch (err: any) {
     log('error', `Error creating note: ${err.message}`);
@@ -718,18 +804,13 @@ ipcMain.handle('notes:create', (_, note: any) => {
 });
 
 ipcMain.handle('notes:update', (_, id: string, updates: any) => {
-  if (!db) return false;
   try {
-    const keys = Object.keys(updates);
-    if (keys.length === 0) return true;
+    const note = flowData.notes.find((n) => n.id === id);
+    if (!note) return false;
 
     updates.updated_at = new Date().toISOString();
-    const updateKeys = Object.keys(updates);
-    const setClause = updateKeys.map(k => `${k} = ?`).join(', ');
-    const values = updateKeys.map(k => updates[k]);
-    values.push(id);
-
-    db.prepare(`UPDATE notes SET ${setClause} WHERE id = ?`).run(...values);
+    Object.assign(note, updates);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error updating note: ${err.message}`);
@@ -738,10 +819,10 @@ ipcMain.handle('notes:update', (_, id: string, updates: any) => {
 });
 
 ipcMain.handle('notes:delete', (_, id: string) => {
-  if (!db) return false;
   try {
-    db.prepare('DELETE FROM notes WHERE id = ?').run(id);
+    flowData.notes = flowData.notes.filter((n) => n.id !== id);
     log('info', `Note deleted: ${id}`);
+    saveData();
     return true;
   } catch (err: any) {
     log('error', `Error deleting note: ${err.message}`);
@@ -751,36 +832,32 @@ ipcMain.handle('notes:delete', (_, id: string) => {
 
 // Daily Reflections
 ipcMain.handle('reflections:all', () => {
-  if (!db) return [];
-  try {
-    return db.prepare('SELECT * FROM daily_reflections ORDER BY date DESC').all();
-  } catch (err: any) {
-    log('error', `Error fetching reflections: ${err.message}`);
-    return [];
-  }
+  return [...flowData.daily_reflections].sort((a, b) => b.date.localeCompare(a.date));
 });
 
 ipcMain.handle('reflections:get', (_, date: string) => {
-  if (!db) return null;
-  try {
-    return db.prepare('SELECT * FROM daily_reflections WHERE date = ?').get(date) || null;
-  } catch (err: any) {
-    log('error', `Error fetching reflection for ${date}: ${err.message}`);
-    return null;
-  }
+  const ref = flowData.daily_reflections.find((r) => r.date === date);
+  return ref || null;
 });
 
 ipcMain.handle('reflections:save', (_, date: string, mood: number, note: string) => {
-  if (!db) return { success: false, unlocked: [] };
   try {
-    db.prepare(`
-      INSERT INTO daily_reflections (date, mood, note, created_at)
-      VALUES (?, ?, ?, datetime('now'))
-      ON CONFLICT(date) DO UPDATE SET mood = excluded.mood, note = excluded.note
-    `).run(date, mood, note);
+    let ref = flowData.daily_reflections.find((r) => r.date === date);
+    if (ref) {
+      ref.mood = mood;
+      ref.note = note;
+    } else {
+      flowData.daily_reflections.push({
+        date,
+        mood,
+        note,
+        created_at: new Date().toISOString()
+      });
+    }
     log('info', `Reflection saved for date: ${date}, mood=${mood}`);
 
     const unlocked = checkAndUnlockAchievement('reflection_done');
+    saveData();
     return { success: true, unlocked };
   } catch (err: any) {
     log('error', `Error saving reflection: ${err.message}`);
@@ -790,17 +867,10 @@ ipcMain.handle('reflections:save', (_, date: string, mood: number, note: string)
 
 // Achievements
 ipcMain.handle('achievements:all', () => {
-  if (!db) return [];
-  try {
-    return db.prepare('SELECT * FROM achievements').all();
-  } catch (err: any) {
-    log('error', `Error fetching achievements: ${err.message}`);
-    return [];
-  }
+  return flowData.achievements || [];
 });
 
 ipcMain.handle('achievements:trigger-check', (_, type: string) => {
-  if (!db) return [];
   if (type === 'stats') {
     return checkAndUnlockAchievement('stats_viewer');
   }
@@ -809,30 +879,27 @@ ipcMain.handle('achievements:trigger-check', (_, type: string) => {
 
 // Notifications
 ipcMain.handle('notifications:all', () => {
-  if (!db) return [];
-  try {
-    return db.prepare('SELECT * FROM notifications ORDER BY created_at DESC').all();
-  } catch (err: any) {
-    log('error', `Error loading notifications: ${err.message}`);
-    return [];
-  }
+  return [...flowData.notifications].sort((a, b) => b.created_at.localeCompare(a.created_at));
 });
 
 ipcMain.handle('notifications:mark-read', (_, id: string) => {
-  if (!db) return false;
   try {
-    db.prepare('UPDATE notifications SET read = 1 WHERE id = ?').run(id);
-    return true;
+    const notif = flowData.notifications.find((n) => n.id === id);
+    if (notif) {
+      notif.read = 1;
+      saveData();
+      return true;
+    }
   } catch (err: any) {
     log('error', `Error marking notification read: ${err.message}`);
-    return false;
   }
+  return false;
 });
 
 ipcMain.handle('notifications:clear-all', () => {
-  if (!db) return false;
   try {
-    db.prepare('DELETE FROM notifications').run();
+    flowData.notifications = [];
+    saveData();
     return true;
   } catch (err: any) {
     return false;
@@ -841,34 +908,27 @@ ipcMain.handle('notifications:clear-all', () => {
 
 // Backup System
 ipcMain.handle('backup:export-json', async () => {
-  if (!db || !mainWindow) return false;
+  if (!mainWindow) return false;
   try {
-    const tables = ['theme_preferences', 'folders', 'tasks', 'goals', 'milestones', 'notes', 'daily_reflections', 'achievements', 'notifications', 'settings'];
-    const backupData: any = {};
-    
-    for (const table of tables) {
-      backupData[table] = db.prepare(`SELECT * FROM ${table}`).all();
-    }
-    
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Export FlowDesk Backup',
-      defaultPath: `flowdesk-backup-${new Date().toISOString().substring(0,10)}.json`,
+      defaultPath: `flowdesk-backup-${new Date().toISOString().substring(0, 10)}.json`,
       filters: [{ name: 'JSON files', extensions: ['json'] }]
     });
 
     if (filePath) {
-      fs.writeFileSync(filePath, JSON.stringify(backupData, null, 2), 'utf-8');
-      log('info', `Backup exported to: ${filePath}`);
+      fs.writeFileSync(filePath, JSON.stringify(flowData, null, 2), 'utf-8');
+      log('info', `Backup JSON exported to: ${filePath}`);
       return true;
     }
   } catch (err: any) {
-    log('error', `Backup export failed: ${err.message}`);
+    log('error', `Backup JSON export failed: ${err.message}`);
   }
   return false;
 });
 
 ipcMain.handle('backup:import-json', async () => {
-  if (!db || !mainWindow) return false;
+  if (!mainWindow) return false;
   try {
     const { filePaths } = await dialog.showOpenDialog(mainWindow, {
       title: 'Import FlowDesk Backup',
@@ -880,52 +940,15 @@ ipcMain.handle('backup:import-json', async () => {
       const content = fs.readFileSync(filePaths[0], 'utf-8');
       const backupData = JSON.parse(content);
       
-      const tables = ['theme_preferences', 'folders', 'tasks', 'goals', 'milestones', 'notes', 'daily_reflections', 'achievements', 'notifications', 'settings'];
-      
-      // Basic check
-      if (typeof backupData !== 'object') {
-        throw new Error('Invalid backup file structure.');
+      // Basic structure validation
+      if (backupData && typeof backupData === 'object' && backupData.tasks && backupData.folders) {
+        flowData = backupData;
+        log('info', `Backup imported successfully from: ${filePaths[0]}`);
+        saveData();
+        return true;
+      } else {
+        throw new Error('Imported backup file does not contain correct FlowDesk database structures.');
       }
-
-      // Write in transaction
-      const restoreTx = db.transaction((data) => {
-        // Clear old tables
-        for (const table of tables) {
-          // Do not delete achievements seeded structure, but update state
-          if (table === 'achievements') {
-            continue;
-          }
-          db!.prepare(`DELETE FROM ${table}`).run();
-        }
-
-        // Insert new data
-        for (const table of tables) {
-          const list = data[table];
-          if (!Array.isArray(list) || list.length === 0) continue;
-          
-          if (table === 'achievements') {
-            const updateAch = db!.prepare('UPDATE achievements SET unlocked_at = ? WHERE id = ?');
-            for (const item of list) {
-              updateAch.run(item.unlocked_at, item.id);
-            }
-            continue;
-          }
-
-          const cols = Object.keys(list[0]);
-          const placeholders = cols.map(() => '?').join(', ');
-          const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`;
-          const insertStmt = db!.prepare(sql);
-          
-          for (const item of list) {
-            const vals = cols.map(c => item[c]);
-            insertStmt.run(...vals);
-          }
-        }
-      });
-
-      restoreTx(backupData);
-      log('info', `Backup imported successfully from: ${filePaths[0]}`);
-      return true;
     }
   } catch (err: any) {
     log('error', `Backup import failed: ${err.message}`);
@@ -936,52 +959,37 @@ ipcMain.handle('backup:import-json', async () => {
 
 // ZIP Backup
 ipcMain.handle('backup:export-zip', async () => {
-  if (!db || !mainWindow) return false;
+  if (!mainWindow) return false;
   try {
-    const userDataPath = app.getPath('userData');
-    const dbPath = path.join(userDataPath, 'database', 'flowdesk.db');
-    const themePref = db.prepare('SELECT mode, accent FROM theme_preferences WHERE id = 1').get() as { mode: string; accent: string } | undefined;
-    
     const settingsBackup = {
-      theme: themePref || { mode: 'dark', accent: 'indigo' },
+      theme: flowData.theme_preferences || { mode: 'dark', accent: 'indigo' },
       backup_timestamp: new Date().toISOString()
     };
 
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Export FlowDesk Bundle',
-      defaultPath: `flowdesk-data-bundle-${new Date().toISOString().substring(0,10)}.zip`,
+      defaultPath: `flowdesk-data-bundle-${new Date().toISOString().substring(0, 10)}.zip`,
       filters: [{ name: 'ZIP files', extensions: ['zip'] }]
     });
 
     if (filePath) {
-      // Due to better-sqlite3 locks, create a temporary copy of the DB first
-      const tempDbPath = path.join(userDataPath, 'flowdesk.db.temp');
-      db.backup(tempDbPath); // Safe backup operation that locks cleanly
-      
-      const dbBuffer = fs.readFileSync(tempDbPath);
+      const dataBuffer = fs.readFileSync(path.join(appConfig.storageDirectory, 'flowdesk_data.json'));
       const settingsBuffer = Buffer.from(JSON.stringify(settingsBackup, null, 2), 'utf-8');
 
-      // Native simple ZIP writing using adm-zip if it exists.
-      // If adm-zip is not installed or errors, we will fallback to a custom packed file
       try {
         const AdmZip = require('adm-zip');
         const zip = new AdmZip();
-        zip.addFile('flowdesk.db', dbBuffer);
+        zip.addFile('flowdesk_data.json', dataBuffer);
         zip.addFile('settings.json', settingsBuffer);
         zip.writeZip(filePath);
-        log('info', `Data ZIP exported to: ${filePath}`);
+        log('info', `Data ZIP bundle exported to: ${filePath}`);
       } catch (zipErr) {
-        // Fallback: package in custom format (binary blob of database + JSON header)
-        // Format: [16 bytes header size][JSON header string][database bytes]
+        // Fallback: package in simple binary block
         log('warn', `adm-zip load failed, using fallback custom package format: ${filePath}`);
         const headerSize = Buffer.alloc(16);
         headerSize.writeUInt32LE(settingsBuffer.length, 0);
-        const outputBuffer = Buffer.concat([headerSize, settingsBuffer, dbBuffer]);
+        const outputBuffer = Buffer.concat([headerSize, settingsBuffer, dataBuffer]);
         fs.writeFileSync(filePath, outputBuffer);
-      } finally {
-        if (fs.existsSync(tempDbPath)) {
-          fs.unlinkSync(tempDbPath);
-        }
       }
       return true;
     }
@@ -993,41 +1001,84 @@ ipcMain.handle('backup:export-zip', async () => {
 
 // Reset Database API
 ipcMain.handle('app:reset', async () => {
-  if (!db) return false;
   try {
     log('warn', 'Starting application reset...');
-    const tables = ['theme_preferences', 'folders', 'tasks', 'goals', 'milestones', 'notes', 'daily_reflections', 'achievements', 'notifications', 'settings'];
-    
-    db.transaction(() => {
-      for (const table of tables) {
-        db!.prepare(`DELETE FROM ${table}`).run();
+    flowData = {
+      app_metadata: {
+        app_version: '1.0.0',
+        db_version: 1,
+      },
+      theme_preferences: {
+        mode: 'dark',
+        accent: 'indigo',
+      },
+      folders: [],
+      tasks: [],
+      goals: [],
+      milestones: [],
+      notes: [],
+      daily_reflections: [],
+      achievements: [
+        { id: 'first_task', title: 'First Step Taken', description: 'Create your first productivity task', unlocked_at: null },
+        { id: 'first_complete', title: 'Productivity Spark', description: 'Complete your first task', unlocked_at: null },
+        { id: 'streak_3', title: 'Building Momentum', description: 'Achieve a 3-day completion streak', unlocked_at: null },
+        { id: 'streak_7', title: 'Productive Habit', description: 'Achieve a 7-day completion streak', unlocked_at: null },
+        { id: 'goal_crusher', title: 'Goal Crusher', description: 'Complete a goal and all milestones', unlocked_at: null },
+        { id: 'note_taker', title: 'Documentarian', description: 'Create your first rich markdown note', unlocked_at: null },
+        { id: 'reflection_done', title: 'Mindful Mind', description: 'Save your first daily reflection', unlocked_at: null },
+        { id: 'productivity_master', title: 'Productivity Master', description: 'Complete 5 tasks in a single day', unlocked_at: null }
+      ],
+      notifications: [],
+      settings: {
+        quotes: JSON.stringify(quotes),
+        quotes_seeded: '1'
       }
-      // Re-seed default settings
-      db!.prepare('INSERT INTO theme_preferences (id, mode, accent) VALUES (1, \'dark\', \'indigo\')').run();
-      db!.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('quotes', JSON.stringify(quotes));
-      db!.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('quotes_seeded', '1');
-      
-      // Reseed achievements
-      const insertAch = db!.prepare('INSERT INTO achievements (id, title, description, unlocked_at) VALUES (?, ?, ?, ?)');
-      const achs = [
-        ['first_task', 'First Step Taken', 'Create your first productivity task', null],
-        ['first_complete', 'Productivity Spark', 'Complete your first task', null],
-        ['streak_3', 'Building Momentum', 'Achieve a 3-day completion streak', null],
-        ['streak_7', 'Productive Habit', 'Achieve a 7-day completion streak', null],
-        ['goal_crusher', 'Goal Crusher', 'Complete a goal and all milestones', null],
-        ['note_taker', 'Documentarian', 'Create your first rich markdown note', null],
-        ['reflection_done', 'Mindful Mind', 'Save your first daily reflection', null],
-        ['productivity_master', 'Productivity Master', 'Complete 5 tasks in a single day', null]
-      ];
-      for (const ach of achs) {
-        insertAch.run(ach[0], ach[1], ach[2], ach[3]);
-      }
-    })();
-
+    };
+    saveData();
     log('info', 'Application reset complete.');
     return true;
   } catch (err: any) {
     log('error', `Application reset failed: ${err.message}`);
     return false;
   }
+});
+
+// Relocation Path Storage Config handles
+ipcMain.handle('storage:get-path', () => {
+  return path.join(appConfig.storageDirectory, 'flowdesk_data.json');
+});
+
+ipcMain.handle('storage:set-path', async () => {
+  if (!mainWindow) return null;
+  try {
+    const filePaths = dialog.showOpenDialogSync(mainWindow, {
+      title: 'Select Directory to Store Database',
+      properties: ['openDirectory', 'createDirectory']
+    });
+
+    if (filePaths && filePaths.length > 0) {
+      const newDir = filePaths[0];
+      const oldPath = path.join(appConfig.storageDirectory, 'flowdesk_data.json');
+      const newPath = path.join(newDir, 'flowdesk_data.json');
+
+      // Copy database to new location if it exists, otherwise initialize it there
+      if (fs.existsSync(oldPath)) {
+        fs.copyFileSync(oldPath, newPath);
+        log('info', `Database file copied from ${oldPath} to ${newPath}`);
+      }
+
+      // Update configuration & save config file
+      appConfig.storageDirectory = newDir;
+      saveConfig();
+      log('info', `Relocated database storage directory to: ${newDir}`);
+
+      // Reload database from new folder path
+      initDatabase();
+      return newPath;
+    }
+  } catch (err: any) {
+    log('error', `Failed to relocate database path: ${err.message}`);
+    throw err;
+  }
+  return null;
 });

@@ -14,12 +14,14 @@ export const Settings: React.FC = () => {
 
   const [logs, setLogs] = useState('Loading logs...');
   const [appVersion, setAppVersion] = useState('1.0.0');
+  const [storagePath, setStoragePath] = useState('Loading path...');
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
 
   useEffect(() => {
     fetchLogs();
     fetchAppVersion();
+    fetchStoragePath();
   }, []);
 
   const fetchLogs = async () => {
@@ -37,6 +39,28 @@ export const Settings: React.FC = () => {
       setAppVersion(ver);
     } catch (err) {
       setAppVersion('1.0.0');
+    }
+  };
+
+  const fetchStoragePath = async () => {
+    try {
+      const path = await window.api.storage.getPath();
+      setStoragePath(path);
+    } catch (err) {
+      setStoragePath('Failed to load storage path.');
+    }
+  };
+
+  const handleChangeStoragePath = async () => {
+    try {
+      const newPath = await window.api.storage.setPath();
+      if (newPath) {
+        setStoragePath(newPath);
+        alert('Data storage relocated successfully! FlowDesk has moved your database and is now running from the new folder.');
+        await loadAllData();
+      }
+    } catch (err: any) {
+      alert(`Relocation failed: ${err.message}`);
     }
   };
 
@@ -213,6 +237,31 @@ export const Settings: React.FC = () => {
         </div>
       </div>
 
+      {/* 3. Cloud Sync & Data Storage */}
+      <div className="glass-panel border border-border rounded-2xl p-6 shadow-xl space-y-6">
+        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+          <Upload size={14} className="text-accent" /> Cloud Sync & Storage Path
+        </h4>
+
+        <div className="flex flex-col gap-4 py-2">
+          <div>
+            <h5 className="text-sm font-bold text-white">Data File Location</h5>
+            <p className="text-xs text-slate-500 font-semibold mt-0.5">
+              Change the storage directory of your tasks and notes (e.g. to a OneDrive, Google Drive, or Dropbox folder) to sync this app across computers.
+            </p>
+          </div>
+          
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 bg-slate-950 border border-border p-3 rounded-xl font-semibold">
+            <span className="flex-1 select-text font-mono text-[10px] text-slate-400 break-all leading-normal font-normal">
+              {storagePath}
+            </span>
+            <Button onClick={handleChangeStoragePath} variant="secondary" size="sm" className="font-semibold shrink-0 border border-border">
+              Change Folder...
+            </Button>
+          </div>
+        </div>
+      </div>
+
       {/* 3. Local Application Logs (Developer Info) */}
       <div className="glass-panel border border-border rounded-2xl p-6 shadow-xl space-y-4">
         <div className="flex items-center justify-between border-b border-border/50 pb-3">
@@ -249,7 +298,7 @@ export const Settings: React.FC = () => {
         {/* System parameters */}
         <div className="flex items-center justify-between text-[9px] text-slate-500 font-bold uppercase tracking-wider select-none">
           <span>FlowDesk v{appVersion}</span>
-          <span className="flex items-center gap-1"><ShieldCheck size={11} className="text-emerald-500 shrink-0" /> SQLite Connection Active</span>
+          <span className="flex items-center gap-1"><ShieldCheck size={11} className="text-emerald-500 shrink-0" /> JSON Database Active</span>
         </div>
       </div>
 

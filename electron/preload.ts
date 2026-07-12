@@ -65,5 +65,9 @@ contextBridge.exposeInMainWorld('api', {
     exportJson: () => ipcRenderer.invoke('backup:export-json'),
     importJson: () => ipcRenderer.invoke('backup:import-json'),
     exportZip: () => ipcRenderer.invoke('backup:export-zip')
+  },
+  storage: {
+    getPath: () => ipcRenderer.invoke('storage:get-path'),
+    setPath: () => ipcRenderer.invoke('storage:set-path')
   }
 });
