@@ -511,7 +511,7 @@ ipcMain.handle('tasks:create', (_, task: any) => {
       recurring: task.recurring || 'None',
       parent_id: task.parent_id || undefined,
       created_at: task.created_at || new Date().toISOString(),
-      completed_at: task.status === 'Completed' ? new Date().toISOString() : undefined
+      completed_at: task.completed_at || (task.status === 'Completed' ? new Date().toISOString() : undefined)
     };
     flowData.tasks.push(newTask);
     log('info', `Task created: ${task.id} - ${task.title}`);
@@ -533,7 +533,7 @@ ipcMain.handle('tasks:update', (_, id: string, updates: any) => {
 
     // Set completed_at timestamp
     if (updates.status === 'Completed' && task.status !== 'Completed') {
-      updates.completed_at = new Date().toISOString();
+      updates.completed_at = updates.completed_at || new Date().toISOString();
     } else if (updates.status && updates.status !== 'Completed') {
       updates.completed_at = undefined;
     }
